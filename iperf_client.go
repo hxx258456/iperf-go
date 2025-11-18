@@ -81,13 +81,40 @@ func send_ticker_proc(data TimerClientData, now time.Time) {
 
 func (test *iperf_test) client_end() {
 	log.Infof("Enter client_end")
+
+	// Stop all timers and tickers
+	log.Infof("Stopping timers and tickers...")
+	if test.timer.done != nil {
+		log.Infof("Closing test.timer.done channel")
+		close(test.timer.done)
+		log.Infof("Closed test.timer.done channel")
+	}
+	if test.stats_ticker.done != nil {
+		log.Infof("Closing test.stats_ticker.done channel")
+		close(test.stats_ticker.done)
+		log.Infof("Closed test.stats_ticker.done channel")
+	}
+	if test.report_ticker.done != nil {
+		log.Infof("Closing test.report_ticker.done channel")
+		close(test.report_ticker.done)
+		log.Infof("Closed test.report_ticker.done channel")
+	}
+	log.Infof("All timer/ticker done channels closed")
+
 	for _, sp := range test.streams {
 		sp.conn.Close()
+	}
+	test.proto.teardown(test)
+	// Send signal to chStats so reporter_callback won't block
+	select {
+	case test.chStats <- true:
+		log.Infof("Sent signal to chStats for final report")
+	default:
+		log.Infof("chStats already has a signal, skipping")
 	}
 	if test.reporter_callback != nil { // call only after exchange_result finish
 		test.reporter_callback(test)
 	}
-	test.proto.teardown(test)
 	if test.set_send_state(IPERF_DONE) < 0 {
 		log.Errorf("set_send_state failed")
 	}
@@ -100,6 +127,7 @@ func (test *iperf_test) client_end() {
 
 func (test *iperf_test) handleClientCtrlMsg() {
 	buf := make([]byte, 4)
+	defer log.Infof("handleClientCtrlMsg goroutine exiting")
 	for {
 		if n, err := test.ctrl_conn.Read(buf); err == nil {
 			state := binary.LittleEndian.Uint32(buf[:])
@@ -166,8 +194,9 @@ func (test *iperf_test) handleClientCtrlMsg() {
 			}
 		case IPERF_DISPLAY_RESULT:
 			test.client_end()
+			return
 		case IPERF_DONE:
-			break
+			return
 		case SERVER_TERMINATE:
 			old_state := test.state
 			test.state = IPERF_DISPLAY_RESULT
@@ -245,10 +274,12 @@ func (test *iperf_test) run_client() int {
 				log.Info("Client Enter Test End State.")
 			} else if state == IPERF_DONE {
 				is_iperf_done = true
+				log.Infof("Client received IPERF_DONE from channel, exiting run_client()")
 			} else {
 				log.Debugf("Channel Unhandle state [%v]", state)
 			}
 		}
 	}
+	log.Infof("Client run_client() loop exited, returning 0")
 	return 0
 }

@@ -133,8 +133,9 @@ func (qc *quicStreamConn) Write(b []byte) (int, error) {
 }
 
 func (qc *quicStreamConn) Close() error {
-	qc.stream.Close()
-	return qc.conn.CloseWithError(0, "closing")
+	// Only close the stream, not the connection (connection is reused for multiplexing)
+	log.Debugf("quicStreamConn Close: closing stream ID %d", qc.stream.StreamID())
+	return qc.stream.Close()
 }
 
 func (qc *quicStreamConn) LocalAddr() net.Addr {
@@ -301,6 +302,33 @@ func (q *quic_proto) stats_callback(test *iperf_test, sp *iperf_stream, temp_res
 	return 0
 }
 
-func (q *quic_proto) teardown(test *iperf_test) int {
+func (qp *quic_proto) teardown(test *iperf_test) int {
+	log.Debugf("QUIC teardown: cleaning up resources...")
+
+	// Close client QUIC connection if it exists
+	if qp.clientConn != nil {
+		log.Debugf("QUIC teardown: closing client connection...")
+		err := qp.clientConn.CloseWithError(0, "test completed")
+		if err != nil {
+			log.Debugf("QUIC teardown: error closing client connection: %v", err)
+		}
+		qp.clientConn = nil
+		log.Debugf("QUIC teardown: client connection closed")
+	}
+
+	// Close server listener connection if this is a server
+	if test.is_server && test.proto_listener != nil {
+		if ql, ok := test.proto_listener.(*quicListener); ok && ql.conn != nil {
+			log.Debugf("QUIC teardown: closing server connection...")
+			err := ql.conn.CloseWithError(0, "test completed")
+			if err != nil {
+				log.Debugf("QUIC teardown: error closing server connection: %v", err)
+			}
+			ql.conn = nil
+			log.Debugf("QUIC teardown: server connection closed")
+		}
+	}
+
+	log.Debugf("QUIC teardown: complete")
 	return 0
 }
