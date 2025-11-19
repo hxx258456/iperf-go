@@ -253,11 +253,27 @@ func (q *quic_proto) send(sp *iperf_stream) int {
 }
 
 func (q *quic_proto) recv(sp *iperf_stream) int {
+	// Check if test is done before blocking read
+	if sp.test.done {
+		log.Debugf("QUIC recv: test is done, exiting")
+		return -1
+	}
+
 	n, err := sp.conn.Read(sp.buffer)
 
 	if err != nil {
 		if err == io.EOF || err == os.ErrClosed || err == io.ErrClosedPipe {
 			log.Debugf("recv QUIC socket close. EOF")
+			return -1
+		}
+		// Check for deadline exceeded error - this is normal when test is done
+		if sp.test.done {
+			log.Debugf("QUIC recv: deadline exceeded after test done, exiting normally")
+			return -1
+		}
+		// Also check for deadline error string
+		if err.Error() == "deadline exceeded" {
+			log.Debugf("recv QUIC deadline exceeded")
 			return -1
 		}
 		log.Errorf("QUIC recv err = %T %v", err, err)
@@ -275,8 +291,9 @@ func (q *quic_proto) recv(sp *iperf_stream) int {
 
 func (q *quic_proto) init(test *iperf_test) int {
 	// QUIC-specific initialization if needed
+	// Set a shorter deadline (1 second) to avoid long waits after test completes
 	for _, sp := range test.streams {
-		sp.conn.SetDeadline(time.Now().Add(time.Duration(test.duration+5) * time.Second))
+		sp.conn.SetDeadline(time.Now().Add(time.Duration(test.duration+1) * time.Second))
 	}
 	return 0
 }
@@ -284,20 +301,48 @@ func (q *quic_proto) init(test *iperf_test) int {
 func (q *quic_proto) stats_callback(test *iperf_test, sp *iperf_stream, temp_result *iperf_interval_results) int {
 	rp := sp.result
 
-	// QUIC uses simplified statistics similar to TCP
-	// RTT estimation from interval duration
-	if temp_result.interval_dur.Milliseconds() > 0 {
-		temp_result.rtt = uint(temp_result.interval_dur.Microseconds() / 10) // rough estimation
-	}
+	// Use QUIC's native connection statistics for accurate measurements
+	if qsc, ok := sp.conn.(*quicStreamConn); ok {
+		connStats := qsc.conn.ConnectionStats()
 
-	if rp.stream_min_rtt == 0 || temp_result.rtt < rp.stream_min_rtt {
-		rp.stream_min_rtt = temp_result.rtt
+		// RTT statistics
+		if connStats.SmoothedRTT > 0 {
+			temp_result.rtt = uint(connStats.SmoothedRTT.Microseconds())
+			if rp.stream_min_rtt == 0 || temp_result.rtt < rp.stream_min_rtt {
+				rp.stream_min_rtt = temp_result.rtt
+			}
+			if rp.stream_max_rtt == 0 || temp_result.rtt > rp.stream_max_rtt {
+				rp.stream_max_rtt = temp_result.rtt
+			}
+			rp.stream_sum_rtt += temp_result.rtt
+			rp.stream_cnt_rtt++
+		} else {
+			// No RTT measurement yet
+			temp_result.rtt = 0
+		}
+
+		// Packet loss statistics
+		// QUIC provides PacketsLost which we use as "lost" count
+		// Note: In QUIC, lost packets are retransmitted automatically, so PacketsLost represents
+		// packets that were declared lost (similar to retransmissions in other protocols)
+		total_lost := uint(connStats.PacketsLost)
+		temp_result.interval_lost = total_lost - rp.stream_prev_total_lost
+		rp.stream_lost += temp_result.interval_lost
+		rp.stream_prev_total_lost = total_lost
+
+		// Use PacketsLost as retransmissions count (since lost packets are retransmitted)
+		temp_result.interval_retrans = temp_result.interval_lost
+		rp.stream_retrans += temp_result.interval_retrans
+		rp.stream_prev_total_retrans = total_lost
+
+		// Packet send/receive statistics
+		rp.stream_in_pkts = uint(connStats.PacketsReceived)
+		rp.stream_out_pkts = uint(connStats.PacketsSent)
+
+		// For QUIC, we use packets as "segments" since QUIC doesn't expose segment-level info
+		rp.stream_in_segs = uint(connStats.PacketsReceived)
+		rp.stream_out_segs = uint(connStats.PacketsSent)
 	}
-	if rp.stream_max_rtt == 0 || temp_result.rtt > rp.stream_max_rtt {
-		rp.stream_max_rtt = temp_result.rtt
-	}
-	rp.stream_sum_rtt += temp_result.rtt
-	rp.stream_cnt_rtt++
 
 	return 0
 }

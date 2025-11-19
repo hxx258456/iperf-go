@@ -99,6 +99,16 @@ func (test *iperf_test) client_end() {
 		close(test.report_ticker.done)
 		log.Infof("Closed test.report_ticker.done channel")
 	}
+
+	// Stop all stream send tickers (for rate limiting)
+	for _, sp := range test.streams {
+		if sp.send_ticker.done != nil {
+			log.Infof("Closing stream send_ticker.done channel")
+			close(sp.send_ticker.done)
+			log.Infof("Closed stream send_ticker.done channel")
+		}
+	}
+
 	log.Infof("All timer/ticker done channels closed")
 
 	for _, sp := range test.streams {
@@ -106,12 +116,15 @@ func (test *iperf_test) client_end() {
 	}
 	test.proto.teardown(test)
 	// Send signal to chStats so reporter_callback won't block
+	// First drain any existing value, then send a new one
 	select {
-	case test.chStats <- true:
-		log.Infof("Sent signal to chStats for final report")
+	case <-test.chStats:
+		log.Infof("Drained existing signal from chStats")
 	default:
-		log.Infof("chStats already has a signal, skipping")
 	}
+	// Now send a fresh signal
+	test.chStats <- true
+	log.Infof("Sent fresh signal to chStats for final report")
 	if test.reporter_callback != nil { // call only after exchange_result finish
 		test.reporter_callback(test)
 	}
@@ -188,10 +201,16 @@ func (test *iperf_test) handleClientCtrlMsg() {
 			test.ctrl_chan <- TEST_RUNNING
 			break
 		case IPERF_EXCHANGE_RESULT:
+			log.Infof("Starting exchange_results()...")
 			if rtn := test.exchange_results(); rtn < 0 {
 				log.Errorf("exchange_results failed. rtn = %v", rtn)
 				return
 			}
+			log.Infof("exchange_results() completed, calling client_end()...")
+			// After exchange_results, directly call client_end
+			// Don't try to read IPERF_DISPLAY_RESULT because JSON decoder may have buffered it
+			test.client_end()
+			return
 		case IPERF_DISPLAY_RESULT:
 			test.client_end()
 			return

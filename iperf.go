@@ -153,7 +153,6 @@ type iperf_stream struct {
 
 	rcv func(sp *iperf_stream) int // return recv size. -1 represent EOF.
 	snd func(sp *iperf_stream) int // return send size. -1 represent socket close.
-
 }
 
 type iperf_setting struct {

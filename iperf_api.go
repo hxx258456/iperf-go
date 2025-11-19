@@ -278,7 +278,7 @@ func (test *iperf_test) init_test() int {
 }
 
 /*
-	main level interface
+main level interface
 */
 func (test *iperf_test) init() {
 	test.protocols = append(test.protocols, new(tcp_proto), new(kcp_proto), new(quic_proto))
@@ -499,9 +499,9 @@ func (test *iperf_test) Print() {
 }
 
 /*
-	----------------------------------------------------
-	******************* iperf_stream *******************
-	----------------------------------------------------
+----------------------------------------------------
+******************* iperf_stream *******************
+----------------------------------------------------
 */
 func (sp *iperf_stream) iperf_recv(test *iperf_test) {
 	// travel all the stream and start receive
@@ -529,7 +529,7 @@ func (sp *iperf_stream) iperf_recv(test *iperf_test) {
 }
 
 /*
-	called by multi streams. Be careful the function called here
+called by multi streams. Be careful the function called here
 */
 func (sp *iperf_stream) iperf_send(test *iperf_test) {
 	// travel all the stream and start receive
@@ -586,12 +586,17 @@ func (test *iperf_test) create_sender_ticker() int {
 
 // Main report-printing callback.
 func iperf_reporter_callback(test *iperf_test) {
-	<-test.chStats // only call this function after stats
+	// Wait for stats signal with timeout to avoid deadlock
+	select {
+	case <-test.chStats: // only call this function after stats
+	case <-time.After(100 * time.Millisecond):
+		log.Debugf("reporter_callback: timeout waiting for chStats signal, continuing anyway")
+	}
 	if test.state == TEST_RUNNING {
 		log.Debugf("TEST_RUNNING report, role = %v, mode = %v, done = %v", test.is_server, test.mode, test.done)
 		test.iperf_print_intermediate()
-	} else if test.state == TEST_END || test.state == IPERF_DISPLAY_RESULT {
-		log.Debugf("TEST_END report, role = %v, mode = %v, done = %v", test.is_server, test.mode, test.done)
+	} else if test.state == TEST_END || test.state == IPERF_DISPLAY_RESULT || test.state == IPERF_EXCHANGE_RESULT {
+		log.Debugf("TEST_END report, role = %v, mode = %v, done = %v, state = %v", test.is_server, test.mode, test.done, test.state)
 		test.iperf_print_intermediate()
 		test.iperf_print_results()
 	} else {

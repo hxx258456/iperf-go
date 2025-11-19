@@ -2,12 +2,13 @@ package main
 
 import (
 	"encoding/binary"
-	KCP "github.com/xtaci/kcp-go"
 	"io"
 	"net"
 	"os"
 	"strconv"
 	"time"
+
+	KCP "github.com/xtaci/kcp-go/v5"
 )
 
 type kcp_proto struct {
@@ -86,7 +87,6 @@ func (kcp *kcp_proto) send(sp *iperf_stream) int {
 }
 
 func (kcp *kcp_proto) recv(sp *iperf_stream) int {
-	// recv is blocking
 	n, err := sp.conn.(*KCP.UDPSession).Read(sp.buffer)
 
 	if err != nil {
@@ -111,6 +111,7 @@ func (kcp *kcp_proto) recv(sp *iperf_stream) int {
 	if n < 0 {
 		return n
 	}
+
 	if sp.test.state == TEST_RUNNING {
 		sp.result.bytes_received += uint64(n)
 		sp.result.bytes_received_this_interval += uint64(n)
@@ -182,18 +183,24 @@ func (kcp *kcp_proto) stats_callback(test *iperf_test, sp *iperf_stream, temp_re
 	rp.stream_in_segs = total_in_segs
 	rp.stream_out_segs = total_out_segs
 
-	// KCP doesn't expose RTT directly, calculate from interval
-	if temp_result.interval_dur.Milliseconds() > 0 {
-		temp_result.rtt = uint(temp_result.interval_dur.Microseconds())
+	// Use KCP's native SRTT (smoothed RTT)
+	// GetSRTT() returns int32 in milliseconds, convert to microseconds
+	srtt_ms := sp.conn.(*KCP.UDPSession).GetSRTT()
+	if srtt_ms > 0 {
+		temp_result.rtt = uint(srtt_ms * 1000) // Convert milliseconds to microseconds
+		if rp.stream_min_rtt == 0 || temp_result.rtt < rp.stream_min_rtt {
+			rp.stream_min_rtt = temp_result.rtt
+		}
+		if rp.stream_max_rtt == 0 || temp_result.rtt > rp.stream_max_rtt {
+			rp.stream_max_rtt = temp_result.rtt
+		}
+		rp.stream_sum_rtt += temp_result.rtt
+		rp.stream_cnt_rtt++
+	} else {
+		// No RTT measurement yet
+		temp_result.rtt = 0
 	}
-	if rp.stream_min_rtt == 0 || temp_result.rtt < rp.stream_min_rtt {
-		rp.stream_min_rtt = temp_result.rtt
-	}
-	if rp.stream_max_rtt == 0 || temp_result.rtt > rp.stream_max_rtt {
-		rp.stream_max_rtt = temp_result.rtt
-	}
-	rp.stream_sum_rtt += temp_result.rtt
-	rp.stream_cnt_rtt++
+
 	return 0
 }
 
